@@ -8,6 +8,7 @@
 
 * **Related Issues and PRs:**
   * [WIP: Prometheus semconvs](https://github.com/prometheus/prometheus/pull/17868)
+  * [promql: Add versioned OTel semantic-conventions read](https://github.com/prometheus/prometheus/pull/18858): the query-time consumer for the schema files this registry would emit.
 
 * **Other docs or links:**
   * [Dev Summit notes: internal telemetry consensus](https://docs.google.com/document/d/1uurQCi5iVufhYHGlBZ8mJMK_freDFKPG0iYBQqJ9fvA/edit?tab=t.0#bookmark=id.ojugisgspwvq)
@@ -201,7 +202,19 @@ It also catches a metric nobody registered. Delete one collector from a `MustReg
 
 Supplemental fixtures call `Registry.Gather()` directly and inspect its protobuf results, covering the two things descriptors cannot answer. For histograms, they record deterministic observations and check the gathered classic and native representations against `histogram_type`, so removing either from a declared mixed histogram fails. For the `NewDesc` sites in scrape metadata and file discovery, which retain hand-written collection and report `UNTYPED`, they check the emitted type against the registry, so a custom collector switching a gauge to a counter fails even though its descriptor is unchanged. These checks establish the representation; they do not validate every construction option, such as bucket limits or reset durations. Fixtures must populate every family needing a supplemental check at least once and fail on missing coverage.
 
-The test reads metric groups from the committed `semconv/registry.resolved.json`, using their package annotations to select the expected definitions. The Go reader does not resolve authoring constructs. This catches drift before it ships; applying renames for deployed downstreams needs a versioned rename schema per release, a follow-on.
+The test reads metric groups from the committed `semconv/registry.resolved.json`, using their package annotations to select the expected definitions. The Go reader does not resolve authoring constructs. This catches drift before it ships; applying renames for deployed downstreams needs a versioned rename schema per release, described under Emitting a schema file.
+
+### Emitting a schema file
+
+Structured deprecation records a rename in the registry, which is enough for review and for generation. It does nothing for a dashboard already deployed against the old name. The artifact that closes that gap is an [OTel telemetry schema file](https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/schemas/file_format_v1.1.0.md): a per-version document whose `rename_metrics` and `rename_attributes` sections say what a name used to be called.
+
+Prometheus is about to be able to read one. [prometheus#18858](https://github.com/prometheus/prometheus/pull/18858) adds `__semconv_url__` and `__schema_url__` matchers that fan a query out across the historical names a schema file declares and merge the results under the requested version's naming. Point that at a schema file covering our own internal metrics and a rename stops breaking dashboards: the old query keeps resolving across the version where the rename happened.
+
+That makes the schema file the natural release artifact for this registry, published beside `registry.resolved.json`, and it makes our `renamed_to` fields the input rather than documentation nobody reads.
+
+Weaver cannot generate it yet. `weaver registry diff` compares two versions, but turning a registry plus its deprecation metadata into a schema file is unsettled upstream: the transformation set is being formalised in [weaver#613](https://github.com/open-telemetry/weaver/issues/613), the transformation language is undecided in [weaver#614](https://github.com/open-telemetry/weaver/issues/614), and [weaver#450](https://github.com/open-telemetry/weaver/issues/450) records why the v1.1 bidirectional model does not hold up. Prometheus has a concrete consumer for the output, which is a useful thing to bring to that discussion, so generating schema files from a registry is the second thing worth pushing upstream alongside a `client_golang` template.
+
+Until it lands, renames are declared in the registry and applied by hand downstream. Nothing here blocks on it; it decides how much a rename costs later, not whether the registry works now.
 
 ### Metric lifecycle and evolution
 
@@ -235,7 +248,7 @@ So "safe metric evolution across the ecosystem" means consumers detect drift the
 
 * **Validator module home**: the `client_golang` changes are limited to `Desc` metadata accessors and metric type storage populated by typed constructors. Supplemental collection checks use the existing `Registry.Gather()` API. Keep optional registry parsing and validation tooling separate from the broadly used main module so its dependencies can evolve independently. The repository already has an [`exp` submodule](https://github.com/prometheus/client_golang/blob/main/exp/go.mod); a separate module there, a new repository under `prometheus`, or another home could host the validator. Ordinary Go tests need only a reader for the resolved JSON, not the Weaver authoring schema resolver. Decide its home when implementing the first contract test.
 
-* **Template and policy hosting**: in this repository under `build/`, in `client_golang` for ecosystem reuse, or bundled into Weaver itself ([weaver#1145](https://github.com/open-telemetry/weaver/pull/1145)), which would end the question. Decide before the migration is stable.
+* **Template and policy hosting**: in this repository under `build/`, in `client_golang` for ecosystem reuse, or bundled into Weaver itself. [weaver#1145](https://github.com/open-telemetry/weaver/pull/1145) merged and expands Weaver's out-of-the-box defaults, so upstreaming a `client_golang` template now has somewhere to go and would end the question. Decide before the migration is stable.
 
 ## Alternatives
 
@@ -289,3 +302,4 @@ These metrics describe Prometheus' own implementation, not a convention for othe
 * [ ] Benchmark `.With()` before touching hot paths.
 * [ ] Generate the rest, one pull request per package.
 * [ ] Follow-on: extend the registry to traces, reusing the same generation target and per-package layout.
+* [ ] Upstream: a `client_golang` template in Weaver's defaults, and schema-file generation from a registry, bringing prometheus#18858 to that discussion as a consumer.
