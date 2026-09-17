@@ -50,8 +50,19 @@ Prometheus maintainers and contributors. Operators who build dashboards and aler
 * Settling whether `prometheus_build_info` is an exception to that rule. Scope explains the case; until it is decided the metric stays out.
 * Migrating exporters or other ecosystem projects.
 * Publishing the registry as upstream OTel semantic conventions.
+* Defining traces or logs in this proposal. Traces are the intended follow-on; see Signal scope.
 
 ## How
+
+### Signal scope
+
+Metrics first, traces next, logs not yet.
+
+Metrics come first because they carry the most downstream weight. Dashboards, alerts, and the mixins in other repositories hardcode these names, and none of them can check a reference today. Traces are the natural follow-on: the same registry, the same toolchain, the same generation target, since Weaver models spans and their attributes in the same schema. Nothing in this design is metrics-only, and the per-package layout extends to spans unchanged.
+
+Weaver is worth its place in the build only if it holds more than one signal. Metrics alone buys consistency and a published contract; metrics and traces together buy a single description of what Prometheus reports about itself. Treat metrics-only as the first step rather than the finished state, and count this direction as done when traces are generated from the same definitions.
+
+Logs stay out. The schema story for logs is not settled enough to author against, and committing to it now would mean revising it later.
 
 ### Scope
 
@@ -132,7 +143,30 @@ Before expanding migration, verify that two checkout locations produce identical
 
 ### Instrumentation code generation
 
-Weaver renders the registry into typed Go through Jinja2 templates, using the generation target above.
+What Weaver generates is `client_golang` code. Weaver is a template engine over the resolved schema, not a binding to the OTel metrics SDK: `weaver registry generate` renders Jinja2 templates we write, so the output is whatever those templates emit. Ours emit `prometheus.NewHistogram`, `prometheus.NewCounterVec`, and the rest of the `client_golang` constructors that Prometheus already calls by hand. No OTel SDK enters the binary, and the metrics on `/metrics` are byte-identical to today's.
+
+End to end, for the `prometheus_tsdb_compaction_duration_seconds` entry shown above, generation writes `tsdb/internal/semconv/metrics.gen.go`:
+
+```go
+func NewPrometheusTsdbCompactionDurationSeconds() prometheus.Histogram {
+    return prometheus.NewHistogram(prometheus.HistogramOpts{
+        Name:                            "prometheus_tsdb_compaction_duration_seconds",
+        Help:                            "Duration of compaction runs",
+        Buckets:                         prometheus.ExponentialBuckets(1, 2, 14),
+        NativeHistogramBucketFactor:     1.1,
+        NativeHistogramMaxBucketNumber:  100,
+        NativeHistogramMinResetDuration: time.Hour,
+    })
+}
+```
+
+`Help` comes from `annotations.prometheus.help`, the bucket configuration from the histogram annotations, and `histogram_type: mixed_histogram` is what selects both the classic and native fields. `unit: s` stays registry metadata and does not reach `Opts.Unit`, for the reasons under Contract testing. The `tsdb` package then drops its hand-written `prometheus.NewHistogram(...)` block and calls the constructor:
+
+```go
+m.compactionDuration = semconv.NewPrometheusTsdbCompactionDurationSeconds()
+```
+
+That is the whole change at the call site. The registry entry is the only place the name, help, and buckets are written down.
 
 Labelled metrics get a typed `.With()` taking a sealed per-metric interface, so a wrong label is a compile error:
 
@@ -225,6 +259,16 @@ This costs contributors almost nothing and gives regression safety on its own. I
 
 That condition decides it. Code stays the authority, the metadata it cannot infer needs its own conventions and its own enforcement, and we maintain two sources anyway. Authoring the schema removes hand-written descriptors and keeps the contract in one place. This alternative stays available as a fallback.
 
+### A Prometheus-specific schema and generator
+
+Define our own YAML schema and write the generator ourselves, rather than taking on Weaver. It would fit Prometheus exactly, carry no fields we do not use, and drop a Rust toolchain from the build.
+
+The pull the other way is that we would own a schema language, a resolver, a validation layer, a documentation renderer, and a code generator, all of which Weaver already provides and maintains. `annotations.prometheus` carries a lot of our metadata, which reads as evidence of a poor fit, but annotations are the designed extension point and the surrounding machinery is what we are actually adopting. The fields we do use, name, brief, instrument, unit, attributes, stability, and structured deprecation, are the ones that make the registry worth publishing, and they are the ones a consumer outside Prometheus already knows how to read.
+
+It also decides the signal question against us. A Prometheus-specific schema would need traces designed from scratch; Weaver models spans today.
+
+We are not choosing it. The version of this worth revisiting is upstreaming a `client_golang` template into Weaver itself, which keeps the toolchain shared and is tracked under Template and policy hosting.
+
 ### Adopt OTel SDK for instrumentation
 
 Prometheus is the reference implementation of its own data model. Instrumenting it with a different SDK would surprise contributors and add a heavy dependency. Weaver stays at the schema layer, `client_golang` at the instrumentation layer.
@@ -244,3 +288,4 @@ These metrics describe Prometheus' own implementation, not a convention for othe
 * [ ] Verify the generation acceptance checks above and demonstrate reading the first package's artifact by commit SHA; release tags containing the file provide release-version lookup without gating further migration.
 * [ ] Benchmark `.With()` before touching hot paths.
 * [ ] Generate the rest, one pull request per package.
+* [ ] Follow-on: extend the registry to traces, reusing the same generation target and per-package layout.
