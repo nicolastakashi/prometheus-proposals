@@ -51,19 +51,19 @@ Prometheus maintainers and contributors. Operators who build dashboards and aler
 * Settling whether `prometheus_build_info` is an exception to that rule. Scope explains the case; until it is decided the metric stays out.
 * Migrating exporters or other ecosystem projects.
 * Publishing the registry as upstream OTel semantic conventions.
-* Defining traces or logs in this proposal. Traces are the intended follow-on; see Signal scope.
+* Defining traces or logs. Traces are the follow-on; see Signal scope.
 
 ## How
 
 ### Signal scope
 
-Metrics first, traces next, logs not yet.
+This proposal covers metrics. Traces come next, logs do not.
 
-Metrics come first because they carry the most downstream weight. Dashboards, alerts, and the mixins in other repositories hardcode these names, and none of them can check a reference today. Traces are the natural follow-on: the same registry, the same toolchain, the same generation target, since Weaver models spans and their attributes in the same schema. Nothing in this design is metrics-only, and the per-package layout extends to spans unchanged.
+Metrics come first because more things outside Prometheus depend on them. Dashboards, alerts, and the mixins in other repositories hardcode these names, and none of them can check a reference today. Traces reuse everything here, since Weaver describes spans and their attributes in the same schema and the per-package layout extends to them unchanged.
 
-Weaver is worth its place in the build only if it holds more than one signal. Metrics alone buys consistency and a published contract; metrics and traces together buy a single description of what Prometheus reports about itself. Treat metrics-only as the first step rather than the finished state, and count this direction as done when traces are generated from the same definitions.
+Weaver earns its place in the build only once it holds more than one signal. Metrics alone gives us consistent definitions and something consumers can read. Adding traces gives us one description of everything Prometheus reports about itself, which is the version worth having. So metrics-only is the first step, and this direction is done when traces generate from the same definitions.
 
-Logs stay out. The schema story for logs is not settled enough to author against, and committing to it now would mean revising it later.
+Logs stay out. Their schemas are still moving, and authoring against them now would mean redoing the work.
 
 ### Scope
 
@@ -144,9 +144,9 @@ Before expanding migration, verify that two checkout locations produce identical
 
 ### Instrumentation code generation
 
-What Weaver generates is `client_golang` code. Weaver is a template engine over the resolved schema, not a binding to the OTel metrics SDK: `weaver registry generate` renders Jinja2 templates we write, so the output is whatever those templates emit. Ours emit `prometheus.NewHistogram`, `prometheus.NewCounterVec`, and the rest of the `client_golang` constructors that Prometheus already calls by hand. No OTel SDK enters the binary, and the metrics on `/metrics` are byte-identical to today's.
+Weaver generates `client_golang` code. It is a template engine over the resolved schema rather than a binding to the OTel metrics SDK. `weaver registry generate` renders Jinja2 templates we write, and ours emit `prometheus.NewHistogram`, `prometheus.NewCounterVec`, and the other constructors Prometheus already calls by hand. No OTel SDK enters the binary, and `/metrics` stays byte-identical.
 
-End to end, for the `prometheus_tsdb_compaction_duration_seconds` entry shown above, generation writes `tsdb/internal/semconv/metrics.gen.go`:
+For the `prometheus_tsdb_compaction_duration_seconds` entry above, generation writes `tsdb/internal/semconv/metrics.gen.go`:
 
 ```go
 func NewPrometheusTsdbCompactionDurationSeconds() prometheus.Histogram {
@@ -161,13 +161,15 @@ func NewPrometheusTsdbCompactionDurationSeconds() prometheus.Histogram {
 }
 ```
 
-`Help` comes from `annotations.prometheus.help`, the bucket configuration from the histogram annotations, and `histogram_type: mixed_histogram` is what selects both the classic and native fields. `unit: s` stays registry metadata and does not reach `Opts.Unit`, for the reasons under Contract testing. The `tsdb` package then drops its hand-written `prometheus.NewHistogram(...)` block and calls the constructor:
+`Help` comes from `annotations.prometheus.help` and the bucket fields from the histogram annotations, where `histogram_type: mixed_histogram` selects both the classic and native sets. `unit: s` stays registry metadata and never reaches `Opts.Unit`, for the reasons under Contract testing.
+
+The `tsdb` package drops its hand-written `prometheus.NewHistogram(...)` block and calls the constructor instead:
 
 ```go
 m.compactionDuration = semconv.NewPrometheusTsdbCompactionDurationSeconds()
 ```
 
-That is the whole change at the call site. The registry entry is the only place the name, help, and buckets are written down.
+After that the registry entry is the only place the name, help, and buckets are written down.
 
 Labelled metrics get a typed `.With()` taking a sealed per-metric interface, so a wrong label is a compile error:
 
@@ -206,15 +208,15 @@ The test reads metric groups from the committed `semconv/registry.resolved.json`
 
 ### Emitting a schema file
 
-Structured deprecation records a rename in the registry, which is enough for review and for generation. It does nothing for a dashboard already deployed against the old name. The artifact that closes that gap is an [OTel telemetry schema file](https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/schemas/file_format_v1.1.0.md): a per-version document whose `rename_metrics` and `rename_attributes` sections say what a name used to be called.
+Structured deprecation records a rename in the registry, which covers review and generation. It does nothing for a dashboard already deployed against the old name. Closing that requires an [OTel telemetry schema file](https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/schemas/file_format_v1.1.0.md), a per-version document whose `rename_metrics` and `rename_attributes` sections record what a name used to be called.
 
-Prometheus is about to be able to read one. [prometheus#18858](https://github.com/prometheus/prometheus/pull/18858) adds `__semconv_url__` and `__schema_url__` matchers that fan a query out across the historical names a schema file declares and merge the results under the requested version's naming. Point that at a schema file covering our own internal metrics and a rename stops breaking dashboards: the old query keeps resolving across the version where the rename happened.
+Prometheus is gaining the ability to read one. [prometheus#18858](https://github.com/prometheus/prometheus/pull/18858) adds `__semconv_url__` and `__schema_url__` matchers. Given a schema file, they run one query per historical name and merge the results under the version the query asked for. Point that at a schema file for our own internal metrics and an old dashboard query keeps resolving across the release that renamed the metric.
 
-That makes the schema file the natural release artifact for this registry, published beside `registry.resolved.json`, and it makes our `renamed_to` fields the input rather than documentation nobody reads.
+So the schema file belongs beside `registry.resolved.json` as a release artifact, and the `renamed_to` fields become its input instead of review-only metadata.
 
-Weaver cannot generate it yet. `weaver registry diff` compares two versions, but turning a registry plus its deprecation metadata into a schema file is unsettled upstream: the transformation set is being formalised in [weaver#613](https://github.com/open-telemetry/weaver/issues/613), the transformation language is undecided in [weaver#614](https://github.com/open-telemetry/weaver/issues/614), and [weaver#450](https://github.com/open-telemetry/weaver/issues/450) records why the v1.1 bidirectional model does not hold up. Prometheus has a concrete consumer for the output, which is a useful thing to bring to that discussion, so generating schema files from a registry is the second thing worth pushing upstream alongside a `client_golang` template.
+Weaver cannot generate one yet. `weaver registry diff` compares two versions, but nobody has settled how a registry plus its deprecation metadata becomes a schema file. [weaver#613](https://github.com/open-telemetry/weaver/issues/613) is still formalising which transformations to allow, [weaver#614](https://github.com/open-telemetry/weaver/issues/614) has not picked a transformation language, and [weaver#450](https://github.com/open-telemetry/weaver/issues/450) explains why the v1.1 bidirectional model does not hold up. Those are design questions waiting on someone with a real use for the output, and prometheus#18858 is one. That makes schema-file generation the second thing worth pushing upstream, alongside a `client_golang` template.
 
-Until it lands, renames are declared in the registry and applied by hand downstream. Nothing here blocks on it; it decides how much a rename costs later, not whether the registry works now.
+Nothing here blocks on it. Until it lands we declare renames in the registry and downstreams apply them by hand, which sets what a rename costs rather than whether the registry works.
 
 ### Metric lifecycle and evolution
 
@@ -248,7 +250,7 @@ So "safe metric evolution across the ecosystem" means consumers detect drift the
 
 * **Validator module home**: the `client_golang` changes are limited to `Desc` metadata accessors and metric type storage populated by typed constructors. Supplemental collection checks use the existing `Registry.Gather()` API. Keep optional registry parsing and validation tooling separate from the broadly used main module so its dependencies can evolve independently. The repository already has an [`exp` submodule](https://github.com/prometheus/client_golang/blob/main/exp/go.mod); a separate module there, a new repository under `prometheus`, or another home could host the validator. Ordinary Go tests need only a reader for the resolved JSON, not the Weaver authoring schema resolver. Decide its home when implementing the first contract test.
 
-* **Template and policy hosting**: in this repository under `build/`, in `client_golang` for ecosystem reuse, or bundled into Weaver itself. [weaver#1145](https://github.com/open-telemetry/weaver/pull/1145) merged and expands Weaver's out-of-the-box defaults, so upstreaming a `client_golang` template now has somewhere to go and would end the question. Decide before the migration is stable.
+* **Template and policy hosting**: in this repository under `build/`, in `client_golang` for ecosystem reuse, or bundled into Weaver itself. [weaver#1145](https://github.com/open-telemetry/weaver/pull/1145) merged and expanded Weaver's default templates, so a `client_golang` template now has somewhere to go upstream, which would end the question. Decide before the migration is stable.
 
 ## Alternatives
 
@@ -274,13 +276,13 @@ That condition decides it. Code stays the authority, the metadata it cannot infe
 
 ### A Prometheus-specific schema and generator
 
-Define our own YAML schema and write the generator ourselves, rather than taking on Weaver. It would fit Prometheus exactly, carry no fields we do not use, and drop a Rust toolchain from the build.
+Define our own YAML schema and write the generator ourselves instead of taking on Weaver. It would fit Prometheus exactly, carry no fields we do not use, and keep a Rust toolchain out of the build.
 
-The pull the other way is that we would own a schema language, a resolver, a validation layer, a documentation renderer, and a code generator, all of which Weaver already provides and maintains. `annotations.prometheus` carries a lot of our metadata, which reads as evidence of a poor fit, but annotations are the designed extension point and the surrounding machinery is what we are actually adopting. The fields we do use, name, brief, instrument, unit, attributes, stability, and structured deprecation, are the ones that make the registry worth publishing, and they are the ones a consumer outside Prometheus already knows how to read.
+Against that, we would then own a schema language, a resolver, a validation layer, a documentation renderer, and a code generator, all of which Weaver already provides and maintains. `annotations.prometheus` holds a lot of our metadata, which looks like evidence of a poor fit, but annotations are the designed extension point, and the machinery around them is what we are adopting. Name, brief, instrument, unit, attributes, stability, and structured deprecation are the fields that make the registry worth publishing, and a consumer outside Prometheus already knows how to read them.
 
-It also decides the signal question against us. A Prometheus-specific schema would need traces designed from scratch; Weaver models spans today.
+It would also settle the signal question the wrong way. Weaver describes spans today; a schema of our own would need traces designed from scratch.
 
-We are not choosing it. The version of this worth revisiting is upstreaming a `client_golang` template into Weaver itself, which keeps the toolchain shared and is tracked under Template and policy hosting.
+We are not choosing it. The version worth revisiting is upstreaming a `client_golang` template into Weaver, which keeps the toolchain shared and is tracked under Template and policy hosting.
 
 ### Adopt OTel SDK for instrumentation
 
@@ -302,4 +304,4 @@ These metrics describe Prometheus' own implementation, not a convention for othe
 * [ ] Benchmark `.With()` before touching hot paths.
 * [ ] Generate the rest, one pull request per package.
 * [ ] Follow-on: extend the registry to traces, reusing the same generation target and per-package layout.
-* [ ] Upstream: a `client_golang` template in Weaver's defaults, and schema-file generation from a registry, bringing prometheus#18858 to that discussion as a consumer.
+* [ ] Upstream a `client_golang` template into Weaver's defaults, and make the case for schema-file generation using prometheus#18858 as the consumer.
