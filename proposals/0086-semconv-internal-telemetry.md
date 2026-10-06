@@ -35,8 +35,8 @@ Help strings are inconsistent, some describing counter semantics and some the ev
 * [Required] One machine-readable registry describes every Prometheus-owned metric, in the sense fixed under Scope. The Go code stops being a second source of truth.
 * [Required] No hand-written metric descriptors. Instrumentation code comes from the registry.
 * [Required] Generated documentation, which therefore cannot drift.
-* [Required] A CI check that catches drift between the registry and the binary, with no OTel Collector and no Weaver binary in the test path.
 * [Required] Stability (`development`, `stable`) and structured deprecation as schema fields, so lifecycle changes are reviewable.
+* [Nice to have] A CI check that catches drift between the registry and the binary. Generation runs Weaver in its own Makefile target; `go test` reads the committed resolved JSON and needs neither Weaver nor an OTel Collector installed.
 * [Nice to have] A base for multi-language generation and ecosystem tooling built on the same registry.
 
 ### Audience
