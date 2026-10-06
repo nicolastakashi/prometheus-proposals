@@ -35,8 +35,8 @@ Help strings are inconsistent, some describing counter semantics and some the ev
 * [Required] One machine-readable registry describes every Prometheus-owned metric, in the sense fixed under Scope. The Go code stops being a second source of truth.
 * [Required] No hand-written metric descriptors. Instrumentation code comes from the registry.
 * [Required] Generated documentation, which therefore cannot drift.
+* [Required] A CI check that catches drift between the registry and the binary. Generation runs Weaver in its own Makefile target; `go test` reads the committed resolved JSON and needs neither Weaver nor an OTel Collector installed.
 * [Required] Stability (`development`, `stable`) and structured deprecation as schema fields, so lifecycle changes are reviewable.
-* [Nice to have] A CI check that catches drift between the registry and the binary. Generation runs Weaver in its own Makefile target; `go test` reads the committed resolved JSON and needs neither Weaver nor an OTel Collector installed.
 * [Nice to have] A base for multi-language generation and ecosystem tooling built on the same registry.
 
 ### Audience
@@ -256,7 +256,7 @@ So "safe metric evolution across the ecosystem" means consumers detect drift the
 
 ### Use Weaver `live-check` for contract testing
 
-This is where adopting Weaver stops paying. For generation it is the whole point, and reimplementing a schema language, resolver, and template engine to avoid it would be a bad trade. For contract testing it has no input that fits us.
+Weaver earns its place in generation, where the alternative is writing our own schema language, resolver, and template engine. For contract testing it has no input that fits us.
 
 [Live-check ingests OTLP, or text and JSON samples from a file or stdin](https://github.com/open-telemetry/weaver/blob/main/crates/weaver_live_check/README.md#ingesters). None of those is a `/metrics` endpoint, and Prometheus does not push OTLP, so the only complete path runs three processes in CI:
 
@@ -266,13 +266,13 @@ flowchart LR
     col -- OTLP --> lc["weaver live-check"]
 ```
 
-The Collector in the middle is the problem, not the process count. Live-check then grades OTLP that the Collector translated, so a translation bug fails as if the registry were wrong. Writing an adapter from Go fixtures to the JSON sample format drops the Collector but means hand-maintaining our own Prometheus-to-OTel mapping, which is the same bug surface with us owning it.
+The Collector is the real cost here. Live-check reads OTLP that the Collector translated, so a mistranslated metric fails the check as if the registry were wrong. Writing an adapter from Go fixtures to the JSON sample format removes the Collector, but then we maintain the Prometheus-to-OTel mapping ourselves and can get it wrong in the same way.
 
 Observed samples also never establish the full descriptor inventory, dormant vectors included, so the fixtures and completeness checks stay either way.
 
 We are not choosing it. Descriptor checks in Go test the contract itself and run wherever `go test` runs.
 
-Worth asking upstream: a live-check ingester that scrapes a Prometheus endpoint directly would delete the Collector and the translation step, and no issue requests one today. Whether the Weaver maintainers want Prometheus exposition in that tool is unknown, so nothing here depends on it.
+One thing is worth asking upstream. A live-check ingester that scrapes a Prometheus endpoint would remove both the Collector and the translation, and no issue requests one today. We do not know whether the Weaver maintainers want Prometheus exposition in that tool, so nothing here depends on it.
 
 ### Hand-written definitions with linting only
 
