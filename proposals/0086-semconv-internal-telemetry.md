@@ -260,11 +260,10 @@ This is where adopting Weaver stops paying. For generation it is the whole point
 
 [Live-check ingests OTLP, or text and JSON samples from a file or stdin](https://github.com/open-telemetry/weaver/blob/main/crates/weaver_live_check/README.md#ingesters). None of those is a `/metrics` endpoint, and Prometheus does not push OTLP, so the only complete path runs three processes in CI:
 
-```
-╭────────────╮  scrape   ╭────────────╮   OTLP   ╭────────────╮
-│ 🔭 prom    │ ━━━━━━━━▶ │ 📮 collector│ ━━━━━━━▶ │ 🧪 weaver  │
-│  /metrics  │           │            │          │ live-check │
-╰────────────╯           ╰────────────╯          ╰────────────╯
+```mermaid
+flowchart LR
+    prom["Prometheus /metrics"] -- scrape --> col["OTel Collector"]
+    col -- OTLP --> lc["weaver live-check"]
 ```
 
 The Collector in the middle is the problem, not the process count. Live-check then grades OTLP that the Collector translated, so a translation bug fails as if the registry were wrong. Writing an adapter from Go fixtures to the JSON sample format drops the Collector but means hand-maintaining our own Prometheus-to-OTel mapping, which is the same bug surface with us owning it.
