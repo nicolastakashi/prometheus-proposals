@@ -150,14 +150,14 @@ For the `prometheus_tsdb_compaction_duration_seconds` entry above, generation wr
 
 ```go
 func NewPrometheusTsdbCompactionDurationSeconds() prometheus.Histogram {
-    return prometheus.NewHistogram(prometheus.HistogramOpts{
-        Name:                            "prometheus_tsdb_compaction_duration_seconds",
-        Help:                            "Duration of compaction runs",
-        Buckets:                         prometheus.ExponentialBuckets(1, 2, 14),
-        NativeHistogramBucketFactor:     1.1,
-        NativeHistogramMaxBucketNumber:  100,
-        NativeHistogramMinResetDuration: time.Hour,
-    })
+	return prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name:                            "prometheus_tsdb_compaction_duration_seconds",
+		Help:                            "Duration of compaction runs",
+		Buckets:                         prometheus.ExponentialBuckets(1, 2, 14),
+		NativeHistogramBucketFactor:     1.1,
+		NativeHistogramMaxBucketNumber:  100,
+		NativeHistogramMinResetDuration: time.Hour,
+	})
 }
 ```
 
