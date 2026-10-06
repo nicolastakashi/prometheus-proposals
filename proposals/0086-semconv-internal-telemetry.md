@@ -272,7 +272,9 @@ Observed samples also never establish the full descriptor inventory, dormant vec
 
 We are not choosing it. Descriptor checks in Go test the contract itself and run wherever `go test` runs.
 
-One thing is worth asking upstream. A live-check ingester that scrapes a Prometheus endpoint would remove both the Collector and the translation, and no issue requests one today. We do not know whether the Weaver maintainers want Prometheus exposition in that tool, so nothing here depends on it.
+A live-check ingester that scrapes a Prometheus endpoint would remove both the Collector and the translation. No issue requests one today, and we are not filing one, because the Go descriptor checks above cover the need.
+
+It becomes the remaining option if review rejects both of the others: Go descriptor checks as the contract test, and Prometheus plus a Collector in CI. If that happens we would have to ask the Weaver maintainers for a Prometheus ingester and wait on their answer, which may be no, since Prometheus exposition in an OTel tool is their call and not ours. Worth knowing before the discussion lands there, rather than after.
 
 ### Hand-written definitions with linting only
 
