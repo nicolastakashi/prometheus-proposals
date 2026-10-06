@@ -256,11 +256,24 @@ So "safe metric evolution across the ecosystem" means consumers detect drift the
 
 ### Use Weaver `live-check` for contract testing
 
-Weaver ships `registry live-check`, which accepts OTLP and [JSON samples from a file or stdin](https://github.com/open-telemetry/weaver/blob/v0.26.1/crates/weaver_live_check/README.md#ingesters). A Collector with a Prometheus receiver and OTLP exporter is one input path. A direct adapter from Go fixtures to Weaver's JSON sample format can avoid the Collector; its text input accepts attribute names or name/value pairs, not Prometheus exposition.
+This is where adopting Weaver stops paying. For generation it is the whole point, and reimplementing a schema language, resolver, and template engine to avoid it would be a bad trade. For contract testing it has no input that fits us.
 
-Either path requires mapping Prometheus names, labels, and representations to Weaver's sample model. The Collector path also checks post-translation telemetry, so a translation bug fails the check as if the registry were wrong. Observed samples alone never establish the complete descriptor inventory, dormant vectors included, so we still write fixtures and completeness checks. Both paths put the Weaver executable in the test path, though prebuilt binaries spare contributors a Rust toolchain.
+[Live-check ingests OTLP, or text and JSON samples from a file or stdin](https://github.com/open-telemetry/weaver/blob/main/crates/weaver_live_check/README.md#ingesters). None of those is a `/metrics` endpoint, and Prometheus does not push OTLP, so the only complete path runs three processes in CI:
 
-We are not choosing it. It saves none of the fixture work and checks a translated copy of the contract rather than the contract itself. Go descriptor checks keep ordinary tests independent of the authoring toolchain.
+```
+╭────────────╮  scrape   ╭────────────╮   OTLP   ╭────────────╮
+│ 🔭 prom    │ ━━━━━━━━▶ │ 📮 collector│ ━━━━━━━▶ │ 🧪 weaver  │
+│  /metrics  │           │            │          │ live-check │
+╰────────────╯           ╰────────────╯          ╰────────────╯
+```
+
+The Collector in the middle is the problem, not the process count. Live-check then grades OTLP that the Collector translated, so a translation bug fails as if the registry were wrong. Writing an adapter from Go fixtures to the JSON sample format drops the Collector but means hand-maintaining our own Prometheus-to-OTel mapping, which is the same bug surface with us owning it.
+
+Observed samples also never establish the full descriptor inventory, dormant vectors included, so the fixtures and completeness checks stay either way.
+
+We are not choosing it. Descriptor checks in Go test the contract itself and run wherever `go test` runs.
+
+Worth asking upstream: a live-check ingester that scrapes a Prometheus endpoint directly would delete the Collector and the translation step, and no issue requests one today. Whether the Weaver maintainers want Prometheus exposition in that tool is unknown, so nothing here depends on it.
 
 ### Hand-written definitions with linting only
 
