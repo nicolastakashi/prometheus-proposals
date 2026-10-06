@@ -274,7 +274,7 @@ We are not choosing it. Descriptor checks in Go test the contract itself and run
 
 A live-check ingester that scrapes a Prometheus endpoint would remove both the Collector and the translation. No issue requests one today, and we are not filing one, because the Go descriptor checks above cover the need.
 
-It becomes the remaining option if review rejects both of the others: Go descriptor checks as the contract test, and Prometheus plus a Collector in CI. If that happens we would have to ask the Weaver maintainers for a Prometheus ingester and wait on their answer, which may be no, since Prometheus exposition in an OTel tool is their call and not ours. Worth knowing before the discussion lands there, rather than after.
+It becomes the remaining option if review rejects both of the others: Go descriptor checks as the contract test, and Prometheus plus a Collector in CI. Choosing it means asking the Weaver maintainers for a Prometheus ingester and waiting on the answer. They may say no. Whether an OTel tool should read Prometheus exposition is their decision, so that path puts this proposal's contract testing behind another project's roadmap.
 
 ### Hand-written definitions with linting only
 
