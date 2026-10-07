@@ -59,11 +59,9 @@ Prometheus maintainers and contributors. Operators who build dashboards and aler
 
 This proposal covers metrics. Traces come next, logs do not.
 
-Metrics come first because more things outside Prometheus depend on them. Dashboards, alerts, and the mixins in other repositories hardcode these names, and none of them can check a reference today. Traces reuse everything here, since Weaver describes spans and their attributes in the same schema and the per-package layout extends to them unchanged.
+Metrics come first because more things outside Prometheus depend on them: dashboards, alerts, and the mixins in other repositories hardcode these names and cannot check a reference today. Traces then reuse everything here, since Weaver describes spans in the same schema and the per-package layout extends to them unchanged.
 
-Weaver earns its place in the build only once it holds more than one signal. Metrics alone gives us consistent definitions and something consumers can read. Adding traces gives us one description of everything Prometheus reports about itself, which is the version worth having. So metrics-only is the first step, and this direction is done when traces generate from the same definitions.
-
-Logs stay out. Their schemas are still moving, and authoring against them now would mean redoing the work.
+Weaver earns its place in the build only once it holds more than one signal, so metrics-only is the first step and this direction is done when traces generate from the same definitions. Logs stay out while their schemas are still moving.
 
 ### Scope
 
@@ -136,11 +134,11 @@ Generated output lands in `<package>/internal/semconv/` as `metrics.gen.go` and 
 
 Check in `semconv/registry.resolved.json` alongside the authoring source in the Prometheus repository. An export template run through `weaver registry generate` writes a JSON object containing the resolved v1 `groups`, with `ref`, `extends`, imports, and group merging already resolved. Each metric carries its expanded attributes, whose `name` fields retain the semantic IDs while `annotations.prometheus.label_name` retains the wire names. Preserve the remaining definition metadata, including Prometheus annotations, stability, and structured deprecation, and keep deprecated definitions. Omit the top-level `registry_url` and each group's diagnostic `lineage`, which can contain checkout paths, and use deterministic ordering and serialization.
 
-One Makefile target validates policies and regenerates the JSON, instrumentation, and documentation from the same registry. Pin Weaver, templates, policies, and any registry dependencies, and pin the resolved output format version explicitly rather than taking Weaver's default; format changes require corresponding exporter and reader changes. Establish the JSON generation target and its CI freshness check before the first contract test, then add code and documentation generation as packages migrate. CI regenerates all applicable output and fails on changed, missing, or unexpected generated files. Ordinary Go tests read the committed JSON and do not invoke Weaver.
+One Makefile target validates policies and regenerates the JSON, instrumentation, and documentation from the same registry. Pin Weaver, templates, policies, and any registry dependencies, and pin the resolved output format version explicitly rather than taking Weaver's default; format changes require corresponding exporter and reader changes. Establish the JSON generation target and its CI freshness check before the first contract test, then add code and documentation generation as packages migrate. CI regenerates all applicable output and fails on changed, missing, or unexpected generated files.
 
 Consumers fetch this same file from Prometheus Git history at a commit SHA or a release tag containing it. The first package demonstrates consumption by commit SHA; expanding migration does not wait for a release. Coverage grows as package registry entries and contract fixtures land. An omitted metric may belong to an unmigrated package or be outside this proposal's ownership scope, so absence from a partial registry alone is not proof of removal.
 
-Before expanding migration, verify that two checkout locations produce identical generated output, that the resolved artifact preserves label annotations and lifecycle metadata, that CI rejects stale or missing generated output, and that ordinary Go contract tests pass without Weaver installed.
+Before expanding migration, verify that two checkout locations produce identical generated output, that the resolved artifact preserves label annotations and lifecycle metadata, and that CI rejects stale or missing generated output.
 
 ### Instrumentation code generation
 
@@ -169,8 +167,6 @@ The `tsdb` package drops its hand-written `prometheus.NewHistogram(...)` block a
 m.compactionDuration = semconv.NewPrometheusTsdbCompactionDurationSeconds()
 ```
 
-After that the registry entry is the only place the name, help, and buckets are written down.
-
 Labelled metrics get a typed `.With()` taking a sealed per-metric interface, so a wrong label is a compile error:
 
 ```go
@@ -196,9 +192,9 @@ For registered checked collectors, `Collector.Describe()` yields a descriptor fo
 
 Units need care in the other direction. `prometheus.Opts` has a `Unit` field and no Prometheus metric sets it, so every descriptor reports an empty unit while the registry declares the real one. The first phase keeps the registry's unit as metadata and requires the descriptor's to stay empty, reporting any non-empty value as a difference. An attempt to populate `Opts.Unit` then becomes visible rather than silently unchecked, and no package waits on a repository-wide edit. That edit would change behaviour. `Opts.Unit` reaches the descriptor hash, `MetricFamily.Unit`, and `# UNIT` in OpenMetrics, and from there scrape and TSDB metadata, remote write, and `/api/v1/metadata`. Names are unaffected; the encoder only rewrites `_total` on counters.
 
-The comparison runs per package. Each migrated package builds its collectors in deterministic fixtures and compares the union of their descriptors against the registry entries whose `annotations.prometheus.package` names it. That value is a repository-relative package directory such as `tsdb`, `scrape`, or `tsdb/wlog`, so it doubles as the `<package>/internal/semconv/` output path generation already needs. Where collectors depend on configuration, table-driven fixtures cover the supported variants. A metric need not appear in every variant, but the union must equal what that package declares. Generation needs the same annotation to know which package owns a metric, so one annotation serves both.
+The comparison runs per package. Each migrated package builds its collectors in deterministic fixtures and compares the union of their descriptors against the registry entries whose `annotations.prometheus.package` names it. That value is a repository-relative package directory such as `tsdb`, `scrape`, or `tsdb/wlog`, so one annotation serves both the test and the `<package>/internal/semconv/` output path. Where collectors depend on configuration, table-driven fixtures cover the supported variants. A metric need not appear in every variant, but the union must equal what that package declares.
 
-Declarations beat scrapes, because a running instance emits much less than it declares. Configure no Alertmanager and the notifier's per-alertmanager metrics never appear. `Describe()` returns them anyway, with the const-versus-variable label split that a scrape drops. It also carries a unit field, though as noted above nothing populates it today.
+Declarations beat scrapes, because a running instance emits much less than it declares. Configure no Alertmanager and the notifier's per-alertmanager metrics never appear. `Describe()` returns them anyway, with the const-versus-variable label split that a scrape drops.
 
 It also catches a metric nobody registered. Delete one collector from a `MustRegister` call and it compiles, `go vet` stays quiet, regeneration produces no diff, and the metric never exists at runtime. Generation cannot help, because the wiring is hand-written.
 
@@ -248,7 +244,7 @@ So "safe metric evolution across the ecosystem" means consumers detect drift the
 
 * **`.With()` allocations on hot paths**: `.With()` allocates a `prometheus.Labels` map per call, likely too much for per-scrape or per-sample metrics. Benchmark a typed `WithX(value string)` fast path first ([reviewer comment](https://github.com/prometheus/prometheus/pull/17868#discussion_r2736198866)).
 
-* **Validator module home**: the `client_golang` changes are limited to `Desc` metadata accessors and metric type storage populated by typed constructors. Supplemental collection checks use the existing `Registry.Gather()` API. Keep optional registry parsing and validation tooling separate from the broadly used main module so its dependencies can evolve independently. The repository already has an [`exp` submodule](https://github.com/prometheus/client_golang/blob/main/exp/go.mod); a separate module there, a new repository under `prometheus`, or another home could host the validator. Ordinary Go tests need only a reader for the resolved JSON, not the Weaver authoring schema resolver. Decide its home when implementing the first contract test.
+* **Validator module home**: the `client_golang` changes are limited to `Desc` metadata accessors and metric type storage populated by typed constructors. Supplemental collection checks use the existing `Registry.Gather()` API. Keep optional registry parsing and validation tooling separate from the broadly used main module so its dependencies can evolve independently. The repository already has an [`exp` submodule](https://github.com/prometheus/client_golang/blob/main/exp/go.mod); a separate module there, a new repository under `prometheus`, or another home could host the validator. It needs only a reader for the resolved JSON, not the Weaver authoring schema resolver. Decide its home when implementing the first contract test.
 
 * **Template and policy hosting**: in this repository under `build/`, in `client_golang` for ecosystem reuse, or bundled into Weaver itself. [weaver#1145](https://github.com/open-telemetry/weaver/pull/1145) merged and expanded Weaver's default templates, so a `client_golang` template now has somewhere to go upstream, which would end the question. Decide before the migration is stable.
 
@@ -256,9 +252,7 @@ So "safe metric evolution across the ecosystem" means consumers detect drift the
 
 ### Use Weaver `live-check` for contract testing
 
-Weaver earns its place in generation, where the alternative is writing our own schema language, resolver, and template engine. For contract testing it has no input that fits us.
-
-[Live-check ingests OTLP, or text and JSON samples from a file or stdin](https://github.com/open-telemetry/weaver/blob/main/crates/weaver_live_check/README.md#ingesters). None of those is a `/metrics` endpoint, and Prometheus does not push OTLP, so the only complete path runs three processes in CI:
+Weaver is right for generation and wrong here, because [live-check ingests OTLP, or text and JSON samples from a file or stdin](https://github.com/open-telemetry/weaver/blob/main/crates/weaver_live_check/README.md#ingesters). None of those is a `/metrics` endpoint, and Prometheus does not push OTLP, so the only complete path runs three processes in CI:
 
 ```mermaid
 flowchart LR
@@ -268,13 +262,11 @@ flowchart LR
 
 The Collector is the real cost here. Live-check reads OTLP that the Collector translated, so a mistranslated metric fails the check as if the registry were wrong. Writing an adapter from Go fixtures to the JSON sample format removes the Collector, but then we maintain the Prometheus-to-OTel mapping ourselves and can get it wrong in the same way.
 
-Observed samples also never establish the full descriptor inventory, dormant vectors included, so the fixtures and completeness checks stay either way.
+Observed samples also never establish the full descriptor inventory, so the fixtures stay either way.
 
-We are not choosing it. Descriptor checks in Go test the contract itself and run wherever `go test` runs.
+We are not choosing it. Descriptor checks in Go test the contract itself.
 
-A live-check ingester that scrapes a Prometheus endpoint would remove both the Collector and the translation. No issue requests one today, and we are not filing one, because the Go descriptor checks above cover the need.
-
-It becomes the remaining option if review rejects both of the others: Go descriptor checks as the contract test, and Prometheus plus a Collector in CI. Choosing it means asking the Weaver maintainers for a Prometheus ingester and waiting on the answer. They may say no. Whether an OTel tool should read Prometheus exposition is their decision, so that path puts this proposal's contract testing behind another project's roadmap.
+A live-check ingester that scrapes a Prometheus endpoint would remove both the Collector and the translation, but no issue requests one and we are not filing one. It becomes the remaining option only if review rejects both Go descriptor checks and a Collector in CI. That path means asking the Weaver maintainers and waiting on their answer, which puts our contract testing behind another project's roadmap.
 
 ### Hand-written definitions with linting only
 
@@ -300,7 +292,7 @@ We are not choosing it. The version worth revisiting is upstreaming a `client_go
 
 ### Adopt OTel SDK for instrumentation
 
-Prometheus is the reference implementation of its own data model. Instrumenting it with a different SDK would surprise contributors and add a heavy dependency. Weaver stays at the schema layer, `client_golang` at the instrumentation layer.
+Prometheus is the reference implementation of its own data model. Instrumenting it with a different SDK would surprise contributors and add a heavy dependency.
 
 ### Publish registry as upstream OTel semantic conventions
 
